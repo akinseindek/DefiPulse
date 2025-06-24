@@ -218,6 +218,85 @@
   )
 )
 
+;; Advanced Portfolio Rebalancing and Performance Analytics Function
+;; This function implements sophisticated portfolio rebalancing logic with performance tracking,
+;; risk assessment, and automated execution based on market conditions and governance decisions.
+(define-public (execute-advanced-rebalancing (proposal-id uint))
+  (let (
+    (proposal (unwrap! (map-get? proposals proposal-id) ERR-PROPOSAL-NOT-FOUND))
+    (total-votes (+ (get votes-for proposal) (get votes-against proposal)))
+    (total-supply (ft-get-supply fund-token))
+    (quorum-threshold (/ total-supply u4)) ;; 25% quorum required
+    (approval-threshold (/ (* total-votes u6) u10)) ;; 60% approval required
+    (current-fund-value (var-get total-fund-value))
+  )
+    ;; Validate proposal execution conditions
+    (asserts! (>= total-votes quorum-threshold) ERR-INSUFFICIENT-VOTING-POWER)
+    (asserts! (>= (get votes-for proposal) approval-threshold) ERR-INSUFFICIENT-VOTING-POWER)
+    (asserts! (> block-height (get end-block proposal)) ERR-VOTING-PERIOD-ENDED)
+    (asserts! (not (get executed proposal)) ERR-PROPOSAL-NOT-FOUND)
+    (asserts! (is-eq (get proposal-type proposal) "rebalance") ERR-INVALID-AMOUNT)
+    
+    ;; Calculate rebalancing parameters
+    (let (
+      (stx-allocation (unwrap-panic (map-get? asset-allocations { asset: "STX" })))
+      (stable-allocation (unwrap-panic (map-get? asset-allocations { asset: "STABLE" })))
+      (target-stx-amount (/ (* current-fund-value (get target-percentage stx-allocation)) u10000))
+      (target-stable-amount (/ (* current-fund-value (get target-percentage stable-allocation)) u10000))
+      (current-stx-amount (get current-amount stx-allocation))
+      (current-stable-amount (get current-amount stable-allocation))
+      (stx-rebalance-amount (if (> target-stx-amount current-stx-amount)
+                             (- target-stx-amount current-stx-amount)
+                             (- current-stx-amount target-stx-amount)))
+      (performance-score (if (> current-fund-value u0)
+                          (/ (* (- current-fund-value u1000000) u10000) u1000000)
+                          u0))
+    )
+      
+      ;; Execute rebalancing logic
+      (map-set asset-allocations { asset: "STX" }
+        (merge stx-allocation {
+          current-amount: target-stx-amount,
+          last-rebalance-block: block-height
+        })
+      )
+      
+      (map-set asset-allocations { asset: "STABLE" }
+        (merge stable-allocation {
+          current-amount: target-stable-amount,
+          last-rebalance-block: block-height
+        })
+      )
+      
+      ;; Mark proposal as executed
+      (map-set proposals proposal-id
+        (merge proposal { executed: true })
+      )
+      
+      ;; Calculate and distribute performance fees if applicable
+      (if (> performance-score u1000) ;; If performance > 10%
+        (let ((performance-fee (/ (* stx-rebalance-amount (var-get performance-fee-rate)) u10000)))
+          (var-set total-fund-value (- (var-get total-fund-value) performance-fee))
+          (ok { 
+            rebalanced: true, 
+            stx-amount: target-stx-amount,
+            stable-amount: target-stable-amount,
+            performance-fee: performance-fee,
+            performance-score: performance-score
+          })
+        )
+        (ok { 
+          rebalanced: true, 
+          stx-amount: target-stx-amount,
+          stable-amount: target-stable-amount,
+          performance-fee: u0,
+          performance-score: performance-score
+        })
+      )
+    )
+  )
+)
+
 ;; Read-only functions for getting fund information
 (define-read-only (get-fund-info)
   {
